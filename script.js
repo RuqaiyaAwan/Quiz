@@ -3,39 +3,70 @@ let timerInterval;
 function validateLogin() {
     const usernameInput = document.getElementById('username').value.trim().toLowerCase();
     const contactInput = document.getElementById('contact').value.trim();
+    const loginError = document.getElementById('login-error');
 
-    const matchedUser = registeredUsers.find(user =>
-        user.name.toLowerCase() === usernameInput && user.contact === contactInput
-    );
-
-    if (!matchedUser) {
-        document.getElementById('login-error').textContent = "Invalid name or contact.";
+    if (!usernameInput || !contactInput) {
+        loginError.textContent = "Please fill all fields.";
         return;
     }
 
-    const meta = JSON.parse(localStorage.getItem('mcqMeta'));
-    const currentTestId = meta?.testId;
-    const allResults = JSON.parse(localStorage.getItem('userResults')) || [];
+    // Sign in anonymously
+    firebase.auth().signInAnonymously()
+        .then(() => {
+            // Query registered users from Firestore
+            return firebase.firestore()
+                .collection("registeredUsers")
+                .where("name", "==", usernameInput)
+                .where("contact", "==", contactInput)
+                .get();
+        })
+        .then(snapshot => {
+            if (snapshot.empty) {
+                loginError.textContent = "Invalid name or contact.";
+                return;
+            }
 
-    const alreadyAttempted = allResults.find(result =>
-        result.name.toLowerCase() === usernameInput &&
-        result.contact === contactInput &&
-        result.testId === currentTestId
-    );
+            const userDoc = snapshot.docs[0];
+            const matchedUser = userDoc.data();
+            const userId = userDoc.id;
 
-    if (alreadyAttempted) {
-        document.getElementById('login-error').textContent = "You've already taken this test. Please wait for the next one.";
-        return;
-    }
+            // Store current user session
+            sessionStorage.setItem('currentUser', JSON.stringify({
+                id: userId,
+                name: matchedUser.name,
+                contact: matchedUser.contact
+            }));
 
-    localStorage.setItem('currentUser', JSON.stringify({
-        name: matchedUser.name,
-        contact: matchedUser.contact
-    }));
+            // Get current test ID
+            return firebase.firestore().collection("meta").doc("current").get()
+                .then(metaDoc => {
+                    const currentTestId = metaDoc.exists ? metaDoc.data().testId : null;
+                    if (!currentTestId) throw new Error("Test ID not found");
 
-    startQuiz();
+                    // Check if this user already attempted
+                    return firebase.firestore()
+                        .collection("results")
+                        .where("userId", "==", userId)
+                        .where("testId", "==", currentTestId)
+                        .get()
+                        .then(resultSnap => {
+                            if (!resultSnap.empty) {
+                                loginError.textContent = "You've already taken this test. Please wait for the next one.";
+                                return;
+                            }
+
+                            // All clear: Start quiz
+                            document.getElementById("form-container").classList.add("hidden");
+                            document.getElementById("quiz-container").classList.remove("hidden");
+                            startQuiz(); // your function to load and show quiz
+                        });
+                });
+        })
+        .catch(error => {
+            console.error("Login error:", error);
+            loginError.textContent = "Error logging in. Please try again.";
+        });
 }
-
 function startQuiz() {
     const meta = JSON.parse(localStorage.getItem('mcqMeta'));
     let timeLeft = meta?.timeLimit || 60;
